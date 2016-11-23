@@ -480,7 +480,22 @@ class WP_Object_Cache {
 			$this->cache_hits += 1;
 
 			if ( $this->_should_persist( $group ) && ( $force || ( ! isset( $this->cache[ $id ] ) && ! array_key_exists( $id, $this->cache ) ) ) ) {
-				$this->cache[ $id ] = $this->redis->get( $id );
+                try {
+                    // try to ping the server
+                    $this->redis->ping();
+                } catch (Exception $e) {
+                    $this->reconnect();
+                }
+
+                try {
+                    // try to get the data
+				    $this->cache[ $id ] = $this->redis->get( $id );
+                } catch (Exception $e) {
+                    // reconnect and try it again
+                    $this->reconnect();
+                    $this->cache[ $id ] = $this->redis->get( $id );
+                }
+
 				if ( ! is_numeric( $this->cache[ $id ] ) ) {
 					$this->cache[ $id ] = unserialize( $this->cache[ $id ] );
 				}
@@ -689,42 +704,53 @@ class WP_Object_Cache {
 	 *
 	 * @return null|WP_Object_Cache If cache is disabled, returns null.
 	 */
-	function __construct() {
-		global $blog_id, $redis_server, $table_prefix;
+	public function __construct() {
+		global $blog_id, $table_prefix;
 
 		$this->multisite = is_multisite();
 		$this->blog_prefix =  $this->multisite ? $blog_id . ':' : '';
 
-		if ( empty( $redis_server ) ) {
-			$redis_server = array( 'host' => '127.0.0.1', 'port' => 6379 );
-		}
-
 		$this->redis = new Redis();
-		$this->redis->connect( $redis_server['host'], $redis_server['port'], 1, NULL, 100 ); # 1s timeout, 100ms delay between reconnections
-		if ( ! empty( $redis_server['auth'] ) ) {
-			$this->redis->auth( $redis_server['auth'] );
-		}
+		$this->connect();
 
 		$this->global_prefix = '';
 		if ( function_exists( 'is_multisite' ) ) {
 			$this->global_prefix = ( is_multisite() || defined( 'CUSTOM_USER_TABLE' ) && defined( 'CUSTOM_USER_META_TABLE' ) ) ? '' : $table_prefix;
 		}
-
-		/**
-		 * @todo This should be moved to the PHP4 style constructor, PHP5
-		 * already calls __destruct()
-		 */
-		register_shutdown_function( array( $this, '__destruct' ) );
 	}
 
-	/**
-	 * Will save the object cache before object is completely destroyed.
-	 *
-	 * Called upon object destruction, which should be when PHP ends.
-	 *
-	 * @return bool True value. Won't be used by PHP
-	 */
-	function __destruct() {
-		return true;
-	}
+    /**
+     * Will save the object cache before object is completely destroyed.
+     *
+     * Called upon object destruction, which should be when PHP ends.
+     *
+     * @return bool True value. Won't be used by PHP
+     */
+    public function __destruct() {
+        $this->redis->close();
+    }
+
+    /**
+     * Connect to Redis server.
+     */
+	protected function connect() {
+        global $redis_server;
+
+        if ( empty( $redis_server ) ) {
+            $redis_server = array( 'host' => '127.0.0.1', 'port' => 6379 );
+        }
+
+        $this->redis->connect( $redis_server['host'], $redis_server['port'], 1, NULL, 100 ); # 1s timeout, 100ms delay between reconnections
+        if ( ! empty( $redis_server['auth'] ) ) {
+            $this->redis->auth( $redis_server['auth'] );
+        }
+    }
+
+    /**
+     * Reconnect to Redis server.
+     */
+    protected function reconnect() {
+        $this->redis->close();
+        $this->connect();
+    }
 }
