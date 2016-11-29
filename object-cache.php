@@ -664,7 +664,21 @@ class WP_Object_Cache {
 		if ( isset( $this->cache[ $id ] ) || array_key_exists( $id, $this->cache ) ) {
 			return true;
 		} else {
-			return $this->redis->exists( $id );
+			try {
+                // try to ping the server
+                $this->redis->ping();
+            } catch (Exception $e) {
+                $this->reconnect();
+            }
+
+            try {
+				return $this->redis->exists( $id );
+			} catch (Exception $e) {
+				// reconnect and try it again
+                $this->reconnect();
+                
+				return $this->redis->exists( $id );
+			}
 		}
 	}
 
